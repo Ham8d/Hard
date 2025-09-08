@@ -1,27 +1,21 @@
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.constants import ParseMode
 
-# **ملاحظة هامة:**
-# يجب استبدال "YOUR_BOT_TOKEN_HERE" و "YOUR_ADMIN_ID_HERE" بمعلوماتك.
-# أفضل ممارسة هي استخدام متغيرات البيئة (Environment Variables) لحماية هذه البيانات.
-#
-# مثال:
-# BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-# ADMIN_ID = int(os.environ.get("ADMIN_ID"))
-#
-# لكن لتبسيط العملية، يمكنك إضافتها مباشرة هنا:
+# قراءة التوكن وID المشرف من Environment Variables
+BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))  # القيمة الافتراضية 0 إذا لم توجد
 
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # ضع توكن البوت الخاص بك هنا
-ADMIN_ID = 123456789              # ضع الـ ID الخاص بك كمدير هنا (يجب أن يكون رقمًا)
+if not BOT_TOKEN or ADMIN_ID == 0:
+    raise ValueError("يجب تعيين TELEGRAM_TOKEN و ADMIN_ID في Environment Variables")
 
-async def start_command(update: Update, context):
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يرسل رسالة الترحيب عند أمر /start."""
     welcome_text = "مرحباً بك في البوت! اضغط على زر `/admin` للتحكم الكامل."
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
-async def admin_command(update: Update, context):
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يفتح لوحة تحكم المدير."""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("عذراً، هذا الأمر مخصص للمدير فقط.")
@@ -36,7 +30,7 @@ async def admin_command(update: Update, context):
     
     await update.message.reply_text("مرحباً بك يا مدير! هذه لوحة التحكم:", reply_markup=reply_markup)
 
-async def button_callback(update: Update, context):
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يستجيب للضغط على الأزرار."""
     query = update.callback_query
     await query.answer()
@@ -57,22 +51,9 @@ def main():
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    # تأكد أنك تقوم بتشغيل البوت بطريقة تتناسب مع بيئة الاستضافة
-    # إذا كنت تستخدم Render، فإن Webhook هو الخيار الأفضل
-    # أما إذا كنت تختبره محليًا، فإن Polling هو الأنسب
-
-    # مثال على التشغيل المحلي (Polling)
     print("البوت يعمل...")
-    application.run_polling()
-    
-    # مثال على التشغيل باستخدام Webhook لبيئات مثل Render.com
-    # port = int(os.environ.get("PORT", "8443"))
-    # application.run_webhook(
-    #     listen="0.0.0.0",
-    #     port=port,
-    #     url_path=BOT_TOKEN,
-    #     webhook_url=f"https://your-app-name.onrender.com/{BOT_TOKEN}"
-    # )
+    application.run_polling()  # للتشغيل المحلي
+    # إذا كنت تريد Render، يمكنك استخدام run_webhook مع تعيين PORT وwebhook_url
 
 if __name__ == "__main__":
     main()
