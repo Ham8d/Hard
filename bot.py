@@ -1,26 +1,32 @@
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.constants import ParseMode
 
-# **تنبيه: هذا الأسلوب غير آمن!**
-# يرجى استبدال "YOUR_BOT_TOKEN_HERE" و "YOUR_ADMIN_ID_HERE" بمعلوماتك.
-# استخدام متغيرات البيئة (environment variables) هو الأسلوب الموصى به.
-BOT_TOKEN = "8349322402:AAFWPI4snUxdCET_XumYSVoh3wa7Cgx4ojA"  # ضع توكن البوت هنا
-ADMIN_ID = 1651487511              # ضع الـ ID الخاص بك هنا (تأكد من أنه رقم صحيح)
+# **ملاحظة هامة:**
+# يجب استبدال "YOUR_BOT_TOKEN_HERE" و "YOUR_ADMIN_ID_HERE" بمعلوماتك.
+# أفضل ممارسة هي استخدام متغيرات البيئة (Environment Variables) لحماية هذه البيانات.
+#
+# مثال:
+# BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+# ADMIN_ID = int(os.environ.get("ADMIN_ID"))
+#
+# لكن لتبسيط العملية، يمكنك إضافتها مباشرة هنا:
+
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # ضع توكن البوت الخاص بك هنا
+ADMIN_ID = 123456789              # ضع الـ ID الخاص بك كمدير هنا (يجب أن يكون رقمًا)
 
 async def start_command(update: Update, context):
     """يرسل رسالة الترحيب عند أمر /start."""
     welcome_text = "مرحباً بك في البوت! اضغط على زر `/admin` للتحكم الكامل."
-    await update.message.reply_text(welcome_text)
+    await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
 async def admin_command(update: Update, context):
     """يفتح لوحة تحكم المدير."""
-    # التأكد من أن المستخدم هو المدير
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("عذراً، هذا الأمر مخصص للمدير فقط.")
         return
 
-    # إنشاء أزرار لوحة التحكم
     admin_keyboard = [
         [InlineKeyboardButton("إدارة الأزرار", callback_data="manage_buttons")],
         [InlineKeyboardButton("إرسال إذاعة", callback_data="broadcast_message")],
@@ -47,13 +53,26 @@ def main():
     """الدالة الرئيسية لتشغيل البوت."""
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # إضافة الأوامر والمستجيبات
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
+    # تأكد أنك تقوم بتشغيل البوت بطريقة تتناسب مع بيئة الاستضافة
+    # إذا كنت تستخدم Render، فإن Webhook هو الخيار الأفضل
+    # أما إذا كنت تختبره محليًا، فإن Polling هو الأنسب
+
+    # مثال على التشغيل المحلي (Polling)
     print("البوت يعمل...")
     application.run_polling()
+    
+    # مثال على التشغيل باستخدام Webhook لبيئات مثل Render.com
+    # port = int(os.environ.get("PORT", "8443"))
+    # application.run_webhook(
+    #     listen="0.0.0.0",
+    #     port=port,
+    #     url_path=BOT_TOKEN,
+    #     webhook_url=f"https://your-app-name.onrender.com/{BOT_TOKEN}"
+    # )
 
 if __name__ == "__main__":
     main()
