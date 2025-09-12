@@ -3,19 +3,28 @@ import tempfile
 import img2pdf
 from PIL import Image
 import fitz  # PyMuPDF
+from flask import Flask, request
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler,
-    MessageHandler, filters, ContextTypes
+    Application, CommandHandler, MessageHandler,
+    filters, ContextTypes
 )
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
+if not TOKEN:
+    raise RuntimeError("⚠️ TELEGRAM_TOKEN not set!")
+
 MAX_IMAGES = 10
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
-
-# نخزن الصور مؤقتًا لكل مستخدم
 user_images = {}
 
+# Telegram Application
+app_bot = Application.builder().token(TOKEN).build()
+
+# Flask app for webhook
+flask_app = Flask(__name__)
+
+# === Handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 أهلاً! أرسل صور لأحولها PDF (حد 10 صور).\n"
@@ -24,14 +33,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    photo = update.message.photo[-1]  # أكبر جودة
+    photo = update.message.photo[-1]
     file = await photo.get_file()
 
     if file.file_size > MAX_FILE_SIZE:
         await update.message.reply_text("⚠️ حجم الصورة أكبر من 20MB.")
         return
 
-    # خزّن الصورة مؤقتًا
     if user_id not in user_images:
         user_images[user_id] = []
 
@@ -56,16 +64,14 @@ async def make_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     images = user_images[user_id]
     pdf_path = tempfile.mktemp(suffix=".pdf")
-
     with open(pdf_path, "wb") as f:
         f.write(img2pdf.convert(images))
 
     await update.message.reply_document(document=open(pdf_path, "rb"), filename="output.pdf")
-    user_images[user_id] = []  # تفريغ القائمة
+    user_images[user_id] = []
 
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-
     if doc.file_size > MAX_FILE_SIZE:
         await update.message.reply_text("⚠️ حجم الملف أكبر من 20MB.")
         return
@@ -74,7 +80,6 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pdf_path = tempfile.mktemp(suffix=".pdf")
     await file.download_to_drive(pdf_path)
 
-    # تحويل PDF → صور باستخدام PyMuPDF
     pdf_doc = fitz.open(pdf_path)
     if len(pdf_doc) > MAX_IMAGES:
         await update.message.reply_text("⚠️ PDF يحتوي أكثر من 10 صفحات.")
@@ -86,15 +91,16 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pix.save(img_path)
         await update.message.reply_photo(photo=open(img_path, "rb"), caption=f"صفحة {i}")
 
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+# Add handlers
+app_bot.add_handler(CommandHandler("start", start))
+app_bot.add_handler(CommandHandler("makepdf", make_pdf))
+app_bot.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+app_bot.add_handler(MessageHandler(filters.Document.MimeType("application/pdf"), handle_pdf))
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("makepdf", make_pdf))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.Document.MimeType("application/pdf"), handle_pdf))
-
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+# === Flask route for Telegram Webhook ===
+@flask_app.route(f"/webhook/{TOKEN}", methods=["POST"])
+def webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, app_bot.bot)
+    app_bot.update_queue.put_nowait(update)
+    return "ok", 200
