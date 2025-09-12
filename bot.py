@@ -1,106 +1,212 @@
 import os
-import tempfile
-import img2pdf
-from PIL import Image
-import fitz  # PyMuPDF
+import sqlite3
 from flask import Flask, request
 from telegram import Update
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    filters, ContextTypes
-)
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-if not TOKEN:
-    raise RuntimeError("⚠️ TELEGRAM_TOKEN not set!")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "123456789"))  # غيرها لرقمك
+DB_PATH = "referrals.db"
 
-MAX_IMAGES = 10
-MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
-user_images = {}
+# ---------- قاعدة البيانات ----------
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    points INTEGER DEFAULT 0,
+                    referrer_id INTEGER
+                )''')
+    conn.commit()
+    conn.close()
 
-# Telegram Application
-app_bot = Application.builder().token(TOKEN).build()
+def add_user(user_id, referrer_id=None):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO users (user_id, points, referrer_id) VALUES (?, 0, ?)", (user_id, referrer_id))
+    conn.commit()
+    conn.close()
 
-# Flask app for webhook
-flask_app = Flask(__name__)
+def add_point(user_id, pts=1):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (pts, user_id))
+    conn.commit()
+    conn.close()
 
-# === Handlers ===
+def remove_point(user_id, pts=1):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE users SET points = MAX(points - ?, 0) WHERE user_id = ?", (pts, user_id))
+    conn.commit()
+    conn.close()
+
+def reset_points(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE users SET points = 0 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_points(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def get_referrals(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users WHERE referrer_id = ?", (user_id,))
+    rows = c.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+def get_all_users():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users")
+    rows = c.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+def get_total_users():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users")
+    row = c.fetchone()
+    conn.close()
+    return row[0]
+
+# ---------- أوامر المستخدم ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 أهلاً! أرسل صور لأحولها PDF (حد 10 صور).\n"
-        "أو أرسل ملف PDF لأرجعه صور."
-    )
+    user_id = update.effective_user.id
+    args = context.args
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    photo = update.message.photo[-1]
-    file = await photo.get_file()
+    referrer_id = int(args[0]) if args else None
+    add_user(user_id, referrer_id)
 
-    if file.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text("⚠️ حجم الصورة أكبر من 20MB.")
-        return
-
-    if user_id not in user_images:
-        user_images[user_id] = []
-
-    if len(user_images[user_id]) >= MAX_IMAGES:
-        await update.message.reply_text("⚠️ الحد الأقصى 10 صور فقط.")
-        return
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tf:
-        await file.download_to_drive(tf.name)
-        user_images[user_id].append(tf.name)
+    if referrer_id and referrer_id != user_id:
+        add_point(referrer_id)
+        await context.bot.send_message(
+            chat_id=referrer_id,
+            text=f"🎉 شخص جديد دخل برابطك! نقاطك: {get_points(referrer_id)}"
+        )
 
     await update.message.reply_text(
-        f"📸 تمت إضافة صورة. المجموع: {len(user_images[user_id])}/{MAX_IMAGES}.\n"
-        "أرسل /makepdf لإنشاء PDF."
+        "👋 أهلاً بك!\n"
+        "استعمل /invite للحصول على رابط إحالتك.\n"
+        "استعمل /points لمعرفة رصيد نقاطك.\n"
+        "استعمل /referrals لرؤية من دخل برابطك."
     )
 
-async def make_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if user_id not in user_images or not user_images[user_id]:
-        await update.message.reply_text("❌ ما عندك صور محفوظة.")
+async def invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    link = f"https://t.me/{context.bot.username}?start={user_id}"
+    await update.message.reply_text(f"🔗 رابط إحالتك:\n{link}")
+
+async def points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    p = get_points(user_id)
+    await update.message.reply_text(f"📊 نقاطك الحالية: {p}")
+
+async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    refs = get_referrals(user_id)
+    if not refs:
+        await update.message.reply_text("❌ ما عندك أي إحالات لحد الآن.")
+    else:
+        text = "👥 الأشخاص اللي دخلوا برابطك:\n"
+        text += "\n".join([f"- {rid}" for rid in refs])
+        text += f"\n\n📊 المجموع: {len(refs)}"
+        await update.message.reply_text(text)
+
+# ---------- أوامر الأدمن ----------
+def is_admin(user_id):
+    return user_id == ADMIN_ID
+
+async def addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
         return
+    try:
+        target = int(context.args[0])
+        pts = int(context.args[1])
+        add_point(target, pts)
+        await update.message.reply_text(f"✅ تمت إضافة {pts} نقطة للمستخدم {target}.")
+    except:
+        await update.message.reply_text("❌ الاستعمال: /addpoints <user_id> <عدد النقاط>")
 
-    images = user_images[user_id]
-    pdf_path = tempfile.mktemp(suffix=".pdf")
-    with open(pdf_path, "wb") as f:
-        f.write(img2pdf.convert(images))
-
-    await update.message.reply_document(document=open(pdf_path, "rb"), filename="output.pdf")
-    user_images[user_id] = []
-
-async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.message.document
-    if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text("⚠️ حجم الملف أكبر من 20MB.")
+async def removepoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
         return
+    try:
+        target = int(context.args[0])
+        pts = int(context.args[1])
+        remove_point(target, pts)
+        await update.message.reply_text(f"✅ تم خصم {pts} نقطة من المستخدم {target}.")
+    except:
+        await update.message.reply_text("❌ الاستعمال: /removepoints <user_id> <عدد النقاط>")
 
-    file = await doc.get_file()
-    pdf_path = tempfile.mktemp(suffix=".pdf")
-    await file.download_to_drive(pdf_path)
-
-    pdf_doc = fitz.open(pdf_path)
-    if len(pdf_doc) > MAX_IMAGES:
-        await update.message.reply_text("⚠️ PDF يحتوي أكثر من 10 صفحات.")
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
         return
+    try:
+        target = int(context.args[0])
+        reset_points(target)
+        await update.message.reply_text(f"🔄 تم تصفير نقاط المستخدم {target}.")
+    except:
+        await update.message.reply_text("❌ الاستعمال: /reset <user_id>")
 
-    for i, page in enumerate(pdf_doc, start=1):
-        pix = page.get_pixmap()
-        img_path = tempfile.mktemp(suffix=".jpg")
-        pix.save(img_path)
-        await update.message.reply_photo(photo=open(img_path, "rb"), caption=f"صفحة {i}")
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    msg = " ".join(context.args)
+    users = get_all_users()
+    for uid in users:
+        try:
+            await context.bot.send_message(chat_id=uid, text=msg)
+        except:
+            pass
+    await update.message.reply_text(f"📢 تم إرسال الرسالة إلى {len(users)} مستخدم.")
 
-# Add handlers
-app_bot.add_handler(CommandHandler("start", start))
-app_bot.add_handler(CommandHandler("makepdf", make_pdf))
-app_bot.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-app_bot.add_handler(MessageHandler(filters.Document.MimeType("application/pdf"), handle_pdf))
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    total = get_total_users()
+    await update.message.reply_text(f"📊 عدد المستخدمين المسجلين: {total}")
 
-# === Flask route for Telegram Webhook ===
+async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    users = get_all_users()
+    await update.message.reply_text("👥 المستخدمين:\n" + "\n".join(map(str, users)))
+
+# ---------- Flask + Webhook ----------
+flask_app = Flask(__name__)
+application = Application.builder().token(TOKEN).build()
+
+# أوامر المستخدم
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("invite", invite))
+application.add_handler(CommandHandler("points", points))
+application.add_handler(CommandHandler("referrals", referrals))
+
+# أوامر الأدمن
+application.add_handler(CommandHandler("addpoints", addpoints))
+application.add_handler(CommandHandler("removepoints", removepoints))
+application.add_handler(CommandHandler("reset", reset))
+application.add_handler(CommandHandler("broadcast", broadcast))
+application.add_handler(CommandHandler("stats", stats))
+application.add_handler(CommandHandler("listusers", listusers))
+
 @flask_app.route(f"/webhook/{TOKEN}", methods=["POST"])
 def webhook():
-    data = request.get_json(force=True)
-    update = Update.de_json(data, app_bot.bot)
-    app_bot.update_queue.put_nowait(update)
-    return "ok", 200
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.update_queue.put_nowait(update)
+    return "ok"
+
+if __name__ == "__main__":
+    init_db()
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
